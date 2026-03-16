@@ -11,7 +11,7 @@ from langchain_chroma import Chroma
 
 import gradio as gr
 
-from fathom.config import KNOWLEDGE_GRAPH_PATH
+from fathom.config import HYBRID_ALPHA_DEFAULT, KNOWLEDGE_GRAPH_PATH
 from fathom.graph import BookKnowledgeGraph
 from fathom.engine import CognitiveEngine
 from fathom.dashboard import format_results_for_gallery, format_explanation_html
@@ -85,50 +85,40 @@ def retrieve_semantic_recommendations(
     return book_recs
 
 
-def recommend_books(query, category, tone, enable_fathom):
+def recommend_books(query, category, tone, enable_fathom, alpha):
     """Main recommendation handler for the dashboard."""
-    # Vector search results (always)
-    vector_recs = retrieve_semantic_recommendations(query, category, tone)
-    vector_gallery = []
-    for _, row in vector_recs.iterrows():
-        description = str(row["description"])
-        truncated_description = " ".join(description.split()[:30]) + "..."
 
-        authors_split = str(row["authors"]).split(";")
-        if len(authors_split) == 2:
-            authors_str = f"{authors_split[0]} and {authors_split[1]}"
-        elif len(authors_split) > 2:
-            authors_str = f"{', '.join(authors_split[:-1])}, and {authors_split[-1]}"
-        else:
-            authors_str = str(row["authors"])
-
-        caption = f"{row['title']} by {authors_str}: {truncated_description}"
-        vector_gallery.append((row["large_thumbnail"], caption))
-
-    # Fathom SAN results (if enabled and available)
-    san_gallery = []
-    explanation_html = ""
-
+    # ── Hybrid mode: blended vector + SAN scores ──────────────────────
     if enable_fathom and fathom_available and cognitive_engine:
         try:
-            _, san_results, explanations = cognitive_engine.recommend(
-                query, category, tone
+            blended_df, explanations = cognitive_engine.hybrid_recommend(
+                query, alpha=alpha, category=category, tone=tone
             )
-            san_gallery = format_results_for_gallery(san_results)
+            blended_gallery = format_results_for_gallery(blended_df)
             explanation_html = format_explanation_html(explanations, books)
+
+            if not blended_gallery:
+                explanation_html = (
+                    "<p><em>No results found for this query.</em></p>"
+                )
+
+            return blended_gallery, explanation_html
         except Exception as e:
-            logging.error("Fathom SAN search failed: %s", e)
-            explanation_html = f"<p><em>Knowledge graph search encountered an error: {e}</em></p>"
+            logging.error("Hybrid recommendation failed: %s", e)
+            explanation_html = (
+                f"<p><em>Hybrid search encountered an error: {e}</em></p>"
+            )
+            return [], explanation_html
 
-    if not san_gallery and not explanation_html:
-        explanation_html = (
-            "<p><em>Enable Fathom and build the Knowledge Graph to see "
-            "structurally connected book discoveries.</em></p>"
-            if not enable_fathom or not fathom_available
-            else "<p><em>No knowledge graph connections found for this query.</em></p>"
-        )
+    # ── Fallback: vector-only mode ────────────────────────────────────
+    vector_recs = retrieve_semantic_recommendations(query, category, tone)
+    vector_gallery = format_results_for_gallery(vector_recs)
 
-    return vector_gallery, san_gallery, explanation_html
+    explanation_html = (
+        "<p><em>Enable Fathom and build the Knowledge Graph to unlock "
+        "hybrid scoring and knowledge graph discovery.</em></p>"
+    )
+    return vector_gallery, explanation_html
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────
@@ -150,19 +140,27 @@ with gr.Blocks(theme=gr.themes.Glass()) as dashboard:
         tone_dropdown = gr.Dropdown(
             choices=tones, label="Select an emotional tone:", value="All"
         )
+
+    with gr.Row():
         enable_fathom_cb = gr.Checkbox(
             label="Enable Knowledge Graph Discovery",
             value=fathom_available,
             interactive=fathom_available,
         )
+        alpha_slider = gr.Slider(
+            minimum=0.0,
+            maximum=1.0,
+            step=0.05,
+            value=HYBRID_ALPHA_DEFAULT,
+            label="Standard Recommendations ← → Surprise Me",
+            info="1.0 = pure semantic similarity, 0.0 = pure knowledge graph discovery",
+            interactive=fathom_available,
+        )
         submit_button = gr.Button("Find recommendations")
 
-    gr.Markdown("## Semantic Matches")
-    vector_output = gr.Gallery(label="Books matching your description", columns=8, rows=2)
-
-    gr.Markdown("## Discovered via Knowledge Graph")
-    san_output = gr.Gallery(
-        label="Structurally connected books (via Spreading Activation)",
+    gr.Markdown("## Recommendations")
+    results_output = gr.Gallery(
+        label="Blended recommendations (semantic + knowledge graph)",
         columns=8,
         rows=2,
     )
@@ -172,8 +170,14 @@ with gr.Blocks(theme=gr.themes.Glass()) as dashboard:
 
     submit_button.click(
         fn=recommend_books,
-        inputs=[user_query, category_dropdown, tone_dropdown, enable_fathom_cb],
-        outputs=[vector_output, san_output, explanation_output],
+        inputs=[
+            user_query,
+            category_dropdown,
+            tone_dropdown,
+            enable_fathom_cb,
+            alpha_slider,
+        ],
+        outputs=[results_output, explanation_output],
     )
 
 
