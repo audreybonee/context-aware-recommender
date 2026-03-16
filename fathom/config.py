@@ -18,7 +18,7 @@ EXTRACTION_BATCH_SIZE = 20
 DEDUP_SIMILARITY_THRESHOLD = 0.92
 
 # ── Spreading Activation (SpreadPy) ───────────────────────────────────
-SAN_RETENTION = 0.6
+SAN_RETENTION = 0.4
 SAN_DECAY = 0.05
 SAN_SUPPRESS = 0.01
 SAN_ITERATIONS = 10
@@ -30,3 +30,7 @@ VECTOR_FINAL_TOP_K = 16
 SAN_SEED_COUNT = 5
 SAN_RESULT_TOP_K = 16
 SAN_MIN_ACTIVATION = 0.1
+
+# ── Hybrid Scoring ────────────────────────────────────────────────────
+HYBRID_ALPHA_DEFAULT = 0.5  # 1.0 = pure vector, 0.0 = pure SAN
+HYBRID_POOL_TOP_K = 100  # larger vector pool for blending
