@@ -37,15 +37,19 @@ class SpreadingActivationEngine:
         self,
         seed_isbns: List[str],
         initial_energy: float = SAN_INITIAL_ENERGY,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Tuple[float, int]]:
         """Seed activation at book nodes and spread through the graph.
+
+        Records the peak activation (α_m) each node achieved across all
+        iterations and the iteration where that peak occurred (t_m).
 
         Args:
             seed_isbns: ISBN-13s of seed books to activate.
             initial_energy: Starting energy for each seed node.
 
         Returns:
-            Dict mapping node_id → final activation score, sorted descending.
+            Dict mapping node_id → (peak_activation, peak_iteration),
+            sorted descending by peak activation.
         """
         seed_node_ids = {f"book:{isbn}" for isbn in seed_isbns}
         valid_seeds = seed_node_ids & set(self.graph.nodes())
@@ -79,20 +83,44 @@ class SpreadingActivationEngine:
         # Run spreading iterations
         results = model.iteration_bunch(self.iterations)
 
-        # Extract final activation values
-        final_status = results[-1]["status"]
+        # Track peak activation (α_m) and time-to-peak (t_m) per node
+        peak_activation: Dict[str, float] = {
+            node: 0.0 for node in self.graph.nodes()
+        }
+        peak_iteration: Dict[str, int] = {
+            node: 0 for node in self.graph.nodes()
+        }
+
+        for iteration_idx, snapshot in enumerate(results):
+            status = snapshot["status"]
+            for node, score in status.items():
+                if score > peak_activation[node]:
+                    peak_activation[node] = score
+                    peak_iteration[node] = iteration_idx + 1
+
+        logger.debug(
+            "SAN peak activations — example top-5: %s",
+            sorted(peak_activation.items(), key=lambda x: x[1], reverse=True)[:5],
+        )
 
         return dict(
-            sorted(final_status.items(), key=lambda x: x[1], reverse=True)
+            sorted(
+                {
+                    node: (peak_activation[node], peak_iteration[node])
+                    for node in self.graph.nodes()
+                }.items(),
+                key=lambda x: x[1][0],
+                reverse=True,
+            )
         )
 
     def get_activated_books(
         self,
-        activation_results: Dict[str, float],
+        activation_results: Dict[str, Tuple[float, int]],
         exclude_seeds: Optional[List[str]] = None,
         top_k: int = 20,
         min_activation: float = SAN_MIN_ACTIVATION,
-    ) -> List[Tuple[str, float]]:
+    ) -> List[Tuple[str, float, int]]:
         """Filter activation results to book nodes only.
 
         Args:
@@ -102,16 +130,17 @@ class SpreadingActivationEngine:
             min_activation: Minimum activation threshold.
 
         Returns:
-            List of (isbn13, activation_score) tuples, sorted by score.
+            List of (isbn13, peak_activation, peak_iteration) tuples,
+            sorted by peak activation.
         """
         exclude_set = {f"book:{isbn}" for isbn in (exclude_seeds or [])}
 
         book_activations = [
-            (node_id.replace("book:", ""), score)
-            for node_id, score in activation_results.items()
+            (node_id.replace("book:", ""), peak_score, peak_iter)
+            for node_id, (peak_score, peak_iter) in activation_results.items()
             if node_id.startswith("book:")
             and node_id not in exclude_set
-            and score >= min_activation
+            and peak_score >= min_activation
         ]
 
         return sorted(book_activations, key=lambda x: x[1], reverse=True)[:top_k]
